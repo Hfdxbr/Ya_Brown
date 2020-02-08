@@ -147,10 +147,37 @@ private:
   double untax_rate;
 };
 
+class BudgetManagerPro : public BudgetManager {
+public:
+  double ComputeIncome(const Date &from, const Date &to) {
+    auto from_ = spend_by_date.lower_bound(from);
+    auto to_ = spend_by_date.upper_bound(to);
+
+    double pure_income = BudgetManager::ComputeIncome(from, to);
+    pure_income -= accumulate(from_, to_, 0.0, [](double acc, auto &item) {
+      return acc + item.second;
+    });
+    return pure_income;
+  }
+  void Spend(const Date &from, const Date &to, double value) {
+    double value_per_day = value / (ComputeDaysDiff(to, from) + 1);
+    for (Date date = from; date <= to; ++date)
+      spend_by_date[date] += value_per_day;
+  }
+
+  void PayTax(const Date &from, const Date &to, int value) {
+    BudgetManager::SetTaxRate(value * 1.0 / 100.0);
+    BudgetManager::PayTax(from, to);
+  }
+
+private:
+  map<Date, double> spend_by_date;
+};
+
 int main() {
   int count;
   cin >> count;
-  BudgetManager budget;
+  BudgetManagerPro budget;
   for (int i = 0; i < count; ++i) {
     string request, from, to;
     cin >> request >> from >> to;
@@ -159,8 +186,15 @@ int main() {
       cin >> value;
       budget.Earn(Date(from), Date(to), value);
     }
+    if (request == "Spend") {
+      int value;
+      cin >> value;
+      budget.Spend(Date(from), Date(to), value);
+    }
     if (request == "PayTax") {
-      budget.PayTax(Date(from), Date(to));
+      int value;
+      cin >> value;
+      budget.PayTax(Date(from), Date(to), value);
     }
     if (request == "ComputeIncome") {
       cout << fixed << budget.ComputeIncome(Date(from), Date(to)) << endl;
