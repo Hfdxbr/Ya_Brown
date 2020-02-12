@@ -87,6 +87,7 @@ struct Bus {
 
 struct Stop {
   Coords pos;
+  std::set<std::string> buses;
 };
 
 class RouteManager {
@@ -175,6 +176,7 @@ void RouteManager::Load<Bus>(std::string_view input) {
     auto stop_name = RemoveSpaces(ReadToken(input, delim));
     auto stop_it = stops_.insert({std::string(stop_name), {{0, 0}}});
     bus.stops.push_back(stop_it.first->first);
+    stop_it.first->second.buses.insert(std::string(bus_id));
   }
 }
 
@@ -216,6 +218,27 @@ std::string RouteManager::Process<Bus>(std::string_view input) {
   return ss.str();
 }
 
+template <>
+std::string RouteManager::Process<Stop>(std::string_view input) {
+  std::stringstream ss;
+  std::string stop_name = std::string(RemoveSpaces(input));
+
+  auto stop_it = stops_.find(stop_name);
+  if (stop_it == stops_.end()) {
+    ss << "Stop " << stop_name << ": not found";
+    return ss.str();
+  }
+
+  auto& buses = stop_it->second.buses;
+  if (buses.empty()) {
+    ss << "Stop " << stop_name << ": no buses";
+  } else {
+    ss << "Stop " << stop_name << ": buses";
+    for (auto& bus : buses) ss << " " << bus;
+  }
+  return ss.str();
+}
+
 void RouteManager::LoadRaw(std::istream& is) {
   int n;
   is >> n;
@@ -244,6 +267,8 @@ std::vector<std::string> RouteManager::ProcessRaw(std::istream& is) {
     std::getline(is, data);
     if (request_type == "Bus") {
       output.push_back(Process<Bus>(data));
+    } else if (request_type == "Stop") {
+      output.push_back(Process<Stop>(data));
     } else {
       Load<void>(data);
     }
