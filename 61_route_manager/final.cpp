@@ -46,6 +46,7 @@ std::string_view ReadToken(std::string_view& s,
 }
 
 std::string_view RemoveSpaces(std::string_view s) {
+  if (s.empty()) return s;
   while (s.front() == ' ') s.remove_prefix(1);
   while (s.back() == ' ') s.remove_suffix(1);
   return s;
@@ -76,8 +77,8 @@ double ConvertToDouble(std::string_view str) {
 }
 
 struct Coords {
-  double latitude;
-  double longitude;
+  double latitude = 0;
+  double longitude = 0;
 };
 
 struct Bus {
@@ -88,6 +89,7 @@ struct Bus {
 struct Stop {
   Coords pos;
   std::set<std::string> buses;
+  std::unordered_map<std::string, int> distances;
 };
 
 class RouteManager {
@@ -124,7 +126,7 @@ template <>
 void RouteManager::Load<Stop>(std::string_view input) {
   auto stop_name = RemoveSpaces(ReadToken(input, ":"));
   auto latitude = RemoveSpaces(ReadToken(input, ","));
-  auto longitude = RemoveSpaces(input);
+  auto longitude = RemoveSpaces(ReadToken(input, ","));
   if (stop_name.empty() || latitude.empty() || longitude.empty()) {
     std::stringstream error;
     error << "Wrong data: Stop name = " << stop_name
@@ -132,9 +134,15 @@ void RouteManager::Load<Stop>(std::string_view input) {
     throw std::invalid_argument(error.str());
   }
 
-  auto& coords = stops_[std::string(stop_name)].pos;
-  coords.latitude = ConvertToDouble(latitude);
-  coords.longitude = ConvertToDouble(longitude);
+  auto& stop = stops_[std::string(stop_name)];
+  stop.pos.latitude = ConvertToDouble(latitude);
+  stop.pos.longitude = ConvertToDouble(longitude);
+  while (!input.empty()) {
+    auto target_distance = RemoveSpaces(ReadToken(input, ","));
+    auto dist = RemoveSpaces(ReadToken(target_distance, "to"));
+    auto target = std::string(RemoveSpaces(target_distance));
+    stop.distances[target] = ConvertToInt(RemoveSpaces(ReadToken(dist, "m")));
+  }
 }
 
 template <>
@@ -174,10 +182,31 @@ void RouteManager::Load<Bus>(std::string_view input) {
   std::string_view delim = delim_counter.first == 0 ? ">" : "-";
   while (!input.empty()) {
     auto stop_name = RemoveSpaces(ReadToken(input, delim));
-    auto stop_it = stops_.insert({std::string(stop_name), {{0, 0}}});
+    auto stop_it = stops_.insert({std::string(stop_name), Stop()});
     bus.stops.push_back(stop_it.first->first);
     stop_it.first->second.buses.insert(std::string(bus_id));
   }
+}
+
+template <class Output, class Iterator, class Func>
+Output AccumulateWithNext(Iterator begin, Iterator end, Func f) {
+  Output result = Output();
+  for (auto s2 = begin, s1 = s2++; s2 != end; ++s1, ++s2) result += f(*s1, *s2);
+
+  return result;
+}
+
+double CalculateGeoLength(Coords& v1, Coords& v2) {
+  auto dl = DegreeToRad(std::abs(v1.longitude - v2.longitude));
+  auto f1 = DegreeToRad(v1.latitude);
+  auto f2 = DegreeToRad(v2.latitude);
+
+  double num1 = cos(f2) * sin(dl);
+  double num2 = cos(f1) * sin(f2) - sin(f1) * cos(f2) * cos(dl);
+  double denom = sin(f1) * sin(f2) + cos(f1) * cos(f2) * cos(dl);
+
+  double angle = atan(sqrt(num1 * num1 + num2 * num2) / denom);
+  return angle * Constants::R;
 }
 
 template <>
@@ -196,25 +225,31 @@ std::string RouteManager::Process<Bus>(std::string_view input) {
   int n = is_looped ? bus.stops.size() : 2 * bus.stops.size() - 1;
   int n_unique =
       std::set<std::string>(bus.stops.begin(), bus.stops.end()).size();
-  double len = 0;
-  for (auto s1 = bus.stops.begin(), s2 = ++bus.stops.begin();
-       s2 != bus.stops.end(); ++s1, ++s2) {
-    auto pos1 = stops_[*s1].pos;
-    auto pos2 = stops_[*s2].pos;
-    auto dl = DegreeToRad(std::abs(pos1.longitude - pos2.longitude));
-    auto f1 = DegreeToRad(pos1.latitude);
-    auto f2 = DegreeToRad(pos2.latitude);
 
-    double num1 = cos(f2) * sin(dl);
-    double num2 = cos(f1) * sin(f2) - sin(f1) * cos(f2) * cos(dl);
-    double denom = sin(f1) * sin(f2) + cos(f1) * cos(f2) * cos(dl);
+  double len_geo = AccumulateWithNext<double>(
+      bus.stops.begin(), bus.stops.end(), [&](auto& x, auto& y) {
+        return CalculateGeoLength(stops_[x].pos, stops_[y].pos);
+      });
+  if (!is_looped) len_geo *= 2;
 
-    double angle = atan(sqrt(num1 * num1 + num2 * num2) / denom);
-    len += angle * Constants::R;
-  }
-  if (!is_looped) len *= 2;
+  auto GetRoadDistance = [&](std::string& x, std::string& y) {
+    auto& stop1 = stops_[x];
+    auto& stop2 = stops_[y];
+    if (stop1.distances.find(y) == stop1.distances.end())
+      return stop2.distances[x];
+    else
+      return stop1.distances[y];
+  };
+
+  int len_road = AccumulateWithNext<int>(bus.stops.begin(), bus.stops.end(),
+                                         GetRoadDistance);
+  if (!is_looped)
+    len_road += AccumulateWithNext<int>(bus.stops.rbegin(), bus.stops.rend(),
+                                        GetRoadDistance);
+
   ss << "Bus " << bus_id << ": " << n << " stops on route, " << n_unique
-     << " unique stops, " << std::setprecision(6) << len << " route length";
+     << " unique stops, " << len_road << " route length, "
+     << std::setprecision(7) << len_road * 1.0 / len_geo << " curvature";
   return ss.str();
 }
 
